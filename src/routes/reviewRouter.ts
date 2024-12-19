@@ -12,6 +12,7 @@ router.get("/deleted/reviews", verifyUser, async (req, res) => {
     try {
         const queue = "soft-deleted-reviews-service";
         const reviews = await fetchDataFromQueue(queue, {});
+        console.log("Fetched one review from the queue:", reviews);
         res.status(200).json(reviews);
     } catch (error) {
         console.error("Error fetching soft-deleted reviews:", error);
