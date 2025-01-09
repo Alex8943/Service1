@@ -9,7 +9,7 @@ app.use(cors());
 
 app.use(express.json()); // for parsing application/json
 
-//testDBConnection();
+testDBConnection();
 //createBackup();
 
 app.use(reviewRouter);
