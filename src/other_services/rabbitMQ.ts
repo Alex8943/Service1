@@ -1,4 +1,4 @@
-import amqp, { Channel, Connection } from "amqplib";
+import amqp, { Channel, Connection, Replies, ConsumeMessage } from "amqplib";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -36,57 +36,68 @@ export async function createChannel(): Promise<{ channel: Channel; connection: C
     }
 }
 
-// Function to fetch data from a queue
+
+
+let sharedReplyQueue: Replies.AssertQueue | null = null;
+const responseHandlers: { [key: string]: (response: any) => void } = {}; // Explicitly typed
+
 export const fetchDataFromQueue = async (queue: string, message: any): Promise<any> => {
     try {
         const { channel } = await createChannel();
-        const replyQueue = await channel.assertQueue("", { exclusive: true });
-        const correlationId = generateUuid();
 
-        console.log(`Sending message to queue: ${queue}`);
-        console.log(`Message: ${JSON.stringify(message)}`);
-        console.log(`Correlation ID: ${correlationId}`);
+            sharedReplyQueue = await channel.assertQueue("", { exclusive: true });
+            console.log("Shared reply queue created:", sharedReplyQueue.queue);
 
-        return new Promise((resolve, reject) => {
-            let resolved = false;
-            const timeout = setTimeout(() => {
-                if (!resolved) {
-                    console.error(`Timeout reached for queue: ${queue}, correlationId: ${correlationId}`);
-                    reject(new Error(`Request timeout: No response from RabbitMQ for queue: ${queue}`));
-                }
-            }, 10000); // 10-second timeout
-
-            // Consume the response from the reply queue
-            
+            // Consume messages from the shared reply queue
             channel.consume(
-                replyQueue.queue,
-                (msg) => {
-                    if (msg && msg.properties.correlationId === correlationId) {
-                        resolved = true;
-                        clearTimeout(timeout);
-                        const response = JSON.parse(msg.content.toString());
-                        console.log(`Received response from queue: ${queue}`);
-                        resolve(response);
+                sharedReplyQueue.queue,
+                (msg: ConsumeMessage | null) => {
+                    if (!msg) return; // Guard clause for null `msg`
 
-                        // Cancel the consumer and delete the reply queue
-                        channel.cancel(msg.fields.consumerTag).catch((err) => console.error("Error canceling consumer:", err));
-                        channel.deleteQueue(replyQueue.queue).catch((err) => console.error("Error deleting reply queue:", err));
-                    }
+                    const correlationId = msg.properties.correlationId;
+                    const response = JSON.parse(msg.content.toString());
+                        // Resolve the promise for the matching correlation ID
+                        responseHandlers[correlationId](response);
+                        delete responseHandlers[correlationId];
                 },
-                { noAck: true }
+                { noAck: true } // Explicit acknowledgment not required for transient queues
             );
 
-            // Send the message to the queue
-            channel.sendToQueue(queue, Buffer.from(JSON.stringify(message)), {
-                replyTo: replyQueue.queue,
-                correlationId,
-            });
+        // Declare and initialize correlationId BEFORE using it
+        const correlationId = generateUuid();
+        console.log(`Sending message to queue: ${queue}, Correlation ID: ${correlationId}`);
+
+        return new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                delete responseHandlers[correlationId];
+                reject(new Error(`Request timeout: No response from RabbitMQ for queue: ${queue}`));
+            }, 20000); // Adjust timeout as needed
+
+            // Store the resolve handler for this correlation ID
+            responseHandlers[correlationId] = (response: any) => {
+                clearTimeout(timeout);
+                resolve(response);
+            };
+
+            // Send the message
+            if (sharedReplyQueue) {
+                channel.sendToQueue(queue, Buffer.from(JSON.stringify(message)), {
+                    replyTo: sharedReplyQueue.queue,
+                    correlationId, // Now correlationId is properly declared
+                });
+            } else {
+                reject(new Error("Shared reply queue is not initialized"));
+            }
         });
     } catch (error) {
         console.error(`Error in fetchDataFromQueue for queue ${queue}:`, error);
         throw error;
     }
 };
+
+
+
+
 
 // Function to close RabbitMQ connection and channel gracefully
 export async function closeRabbitMQ() {

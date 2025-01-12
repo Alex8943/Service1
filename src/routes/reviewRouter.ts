@@ -20,6 +20,8 @@ router.get("/deleted/reviews", verifyUser, async (req, res) => {
     }
 });
 
+export default router;
+
 
 /*
 // old logic to fetch soft-deleted reviews
@@ -79,4 +81,4 @@ export async function getSoftDeletedReviews() {
     */
 
 
-export default router;
+
